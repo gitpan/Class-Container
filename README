@@ -1,0 +1,174 @@
+NAME
+    Class::Container - Glues object frameworks together transparently
+
+SYNOPSIS
+     package Candy;
+ 
+     use Class::Container;
+     use base qw(Class::Container);
+ 
+     __PACKAGE__->valid_params
+       (
+        color  => {default => 'green'},
+        flavor => {default => 'hog'},
+       );
+ 
+     __PACKAGE__->contained_objects
+       (
+        frog       =>  'Food::TreeFrog',
+        vegetables => { class => 'Food::Ingredient',
+                        delayed => 1 },
+       );
+ 
+     sub new {
+       my $package = shift;
+   
+       # Build $self, possibly passing elements of @_ to 'ingredient' object
+       my $self = $package->SUPER::new(@_);
+
+       ... do any more initialization here ...
+       return $self;
+     }
+
+DESCRIPTION
+    This class facilitates building frameworks of several classes that
+    inter-operate. It was first designed and built for "HTML::Mason", in which
+    the Compiler, Lexer, Interpreter, Resolver, Buffer, and several other
+    objects must create each other transparently, passing the appropriate
+    parameters to the right class.
+
+    The main features of "Class::Container" are:
+
+    * Declaration of parameters used by each member in a class framework
+    * Transparent passing of constructor parameters to the class that needs them
+    * Ability to create one (automatic) or many (manual) contained objects
+    automatically
+    * Automatic checking of duplicate class parameter names
+    The most important methods provided are "valid_params()" and
+    "contained_objects()", both of which are class methods. There is not a
+    "new()" method, that is expected to be defined in a derived class.
+
+METHODS
+  new()
+
+    Any class that inherits from "Class::Container" should also inherit its
+    "new()" method. You can do this simply by omitting it in your class, or by
+    calling "SUPER::new(@_)" as indicated in the SYNOPSIS. The "new()" method
+    ensures that the proper parameters and objects are passed to the proper
+    constructor methods.
+
+    A the moment, the only possible constructor method is "new()". If you need
+    to create other constructor methods, they should also call "SUPER::new()",
+    or possibly even your class's "new()" method.
+
+  contained_objects()
+
+    This class method is used to register what other objects, if any, a given
+    class creates. It is called with a hash whose keys are the parameter names
+    that the contained class's constructor accepts, and whose values are the
+    default class to create an object of.
+
+    For example, consider the "HTML::Mason::Compiler" class, which uses the
+    following code:
+
+      __PACKAGE__->contained_objects( lexer => 'HTML::Mason::Lexer' );
+
+    This defines the relationship between the "HTML::Mason::Compiler" class and
+    the class it creates to go in its "lexer" slot. The "HTML::Mason::Compiler"
+    class "has a" "lexer". The "HTML::Mason::Compiler->new()" method will accept
+    a "lexer" parameter and, if no such parameter is given, an object of the
+    "HTML::Mason::Lexer" class should be constructed.
+
+    We also implement a bit of magic here, so that if
+    "HTML::Mason::Compiler->new()" is called with a "lexer_class" parameter, it
+    will load the class, instantiate a new object of that given class, and use
+    that for the "lexer" object. In fact, we're smart enough to notice if
+    parameters given to "HTML::Mason::Compiler->new()" actually should go to the
+    "lexer" contained object, and it will make sure that they get passed along.
+
+    Furthermore, an object may be declared as "delayed", which means that an
+    object *won't* be created when its enclosing class is constructed. Instead,
+    these objects will be created "on demand", potentially more than once. The
+    constructors will still enjoy the automatic passing of parameters to the
+    correct class. See the "create_delayed_object()" for more.
+
+  valid_params()
+
+    The "valid_params()" method is similar to the "contained_objects()" method
+    in that it is a class method that declares properties of the current class.
+    It is called in order to register a set of parameters which are valid for a
+    class's "new()" constructor method. It is called with a hash that contains
+    parameter names as its keys and validation specifications as values. This
+    validation specification is largely the same as that used by the
+    "Params::Validate" module, because we use "Params::Validate" internally.
+
+    As an example, HTML::Mason::Compiler contains the following:
+
+      __PACKAGE__->valid_params
+          (
+           allow_globals        => { parse => 'list',   type => ARRAYREF, default => [] },
+           default_escape_flags => { parse => 'string', type => SCALAR,   default => '' },
+           lexer                => { isa => 'HTML::Mason::Lexer' },
+           preprocess           => { parse => 'code',   type => CODEREF,  optional => 1 },
+           postprocess_perl     => { parse => 'code',   type => CODEREF,  optional => 1 },
+           postprocess_text     => { parse => 'code',   type => CODEREF,  optional => 1 },
+          );
+
+    The "type", "default", and "optional" parameters are part of the validation
+    specification used by "Params::Validate". The various constants used,
+    "ARRAYREF", "SCALAR", etc. are all exported by "Params::Validate". This
+    means that any of these six parameter names, plus the "lexer_class"
+    parameter (because of the "contained_objects()" specification given
+    earlier), are valid arguments to the Compiler's "new()" method.
+
+    Note that there are also some "parse" attributes declared. These have
+    nothing to do with "Class::Container" or "Params::Validate" - any extra
+    entries like this are simply ignored, so you are free to put extra
+    information in the specifications as long as it doesn't overlap with what
+    "Class::Container" or "Params::Validate" are looking for.
+
+  create_delayed_object()
+
+    If a contained object was declared with "delayed => 1", use this method to
+    create an instance of the object. Note that this is an object method, not a
+    class method:
+
+       my $foo =       $self->create_delayed_object('foo', ...); # YES!
+       my $foo = __PACKAGE__->create_delayed_object('foo', ...); # NO!
+
+    The first argument should be a key passed to the "contained_objects()"
+    method. Any additional arguments will be passed to the "new()" method of the
+    object being created, overriding any parameters previously passed to the
+    container class constructor. (Could I possibly be more alliterative? Veni,
+    vedi, vici.)
+
+  delayed_object_params()
+
+    Allows you to adjust the parameters that will be used to create any delayed
+    objects in the future. The first argument specifies the "name" of the
+    object, and any additional arguments are key-value pairs that will become
+    parameters to the delayed object.
+
+  validation_spec()
+
+    Returns a hash reference suitable for passing to the "Params::Validate"
+    "validate" function. Does not include any arguments that can be passed to
+    contained objects.
+
+  allowed_params()
+
+    Returns a hash reference of every parameter this class will accept,
+    including parameters it will pass on to its own contained objects.
+
+SEE ALSO
+    the Params::Validate manpage, the HTML::Mason manpage
+
+AUTHOR
+    Ken Williams <ken@mathforum.org>, based extremely heavily on collaborative
+    work with Dave Rolsky <autarch@urth.org> and Jonathan Swartz
+    <swartz@pobox.com> on the HTML::Mason project.
+
+COPYRIGHT
+    This program is free software; you can redistribute it and/or modify it
+    under the same terms as Perl itself.
+
