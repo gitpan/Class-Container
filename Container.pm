@@ -1,6 +1,8 @@
 package Class::Container;
-$VERSION = '0.01_04';
+$VERSION = '0.01_05';
 $VERSION = eval $VERSION;
+
+BEGIN { eval "use Scalar::Util qw(weaken)" }  # Optional
 
 use strict;
 
@@ -35,6 +37,7 @@ sub new
     my $proto = shift;
     my $class = ref $proto || $proto;
     my @args = $class->create_contained_objects(@_);
+    local $Params::Validate::called = "$class->new()";
     return bless {validate @args, $class->validation_spec}, $class;
 }
 
@@ -121,12 +124,32 @@ sub contained_objects
     $CONTAINED_OBJECTS{$class} = {@_};
 }
 
+sub container {
+  my $self = shift;
+  return $self->{container}{container};
+}
+
+sub call_method {
+  my ($self, $name, $method, %args) = @_;
+  
+  die "Unknown delayed object '$name'"
+    unless exists $self->{container}{delayed}{$name};
+  
+  my $class = $self->{container}{delayed}{$name}{class}
+    or die "Unknown class for delayed object '$name'";
+
+  $self->_load_module($class);
+  return $class->$method( %{ $self->{container}{delayed}{$name}{args} }, %args );
+}
+
 sub create_contained_objects
 {
     # Typically $self doesn't exist yet, $_[0] is a string classname
     my ($class, %args) = @_;
 
-    my %c = $class->get_contained_objects;
+    my %c = $class->get_contained_object_spec;
+    my %contained_args;
+
     while (my ($name, $spec) = each %c) {
 	my $default_class = ref($spec) ? $spec->{class}   : $spec;
 	my $delayed       = ref($spec) ? $spec->{delayed} : 0;
@@ -134,7 +157,6 @@ sub create_contained_objects
 	    # User provided an object
 	    die "Cannot provide a '$name' object, its creation is delayed" if $delayed;
 
-	    #
 	    # We still need to delete any arguments that _would_ have
 	    # been given to this object's constructor (if the object
 	    # had not been given).  This allows a container class to
@@ -142,7 +164,8 @@ sub create_contained_objects
 	    # accepting an already-constructed object as one of its
 	    # params.
 	    #
-	    $class->_get_contained_args(ref $args{$name}, \%args);
+	    my $c_args = $class->_get_contained_args(ref $args{$name}, \%args);
+	    @contained_args{ keys %$c_args } = ();
 	    next;
 	}
 
@@ -150,13 +173,23 @@ sub create_contained_objects
 	my $contained_class = delete $args{"${name}_class"} || $default_class;
 	next unless $contained_class;
 
+	my $c_args = $class->_get_contained_args($contained_class, \%args);
+	@contained_args{ keys %$c_args } = ();
+
 	if ($delayed) {
-	    $args{"_delayed_$name"}{args} = $class->_get_contained_args($contained_class, \%args);
-	    $args{"_delayed_$name"}{class} = $contained_class;
+	  $args{container}{delayed}{$name}{args} = $c_args;
+	  $args{container}{delayed}{$name}{class} = $contained_class;
 	} else {
-	    $args{$name} = $class->_make_contained_object($contained_class, \%args);
+	  $args{$name} = $contained_class->new(%$c_args);
 	}
     }
+
+    # Delete things that we're not going to use - things that are in
+    # our contained object specs but not in ours.
+    my $my_spec = $class->validation_spec;
+    delete @args{ grep {!exists $my_spec->{$_}} keys %contained_args };
+
+    $args{container} ||= {};
 
     return %args;
 }
@@ -164,16 +197,9 @@ sub create_contained_objects
 sub create_delayed_object
 {
     my ($self, $name, %args) = @_;
-
-    # It just has to exist.  An empty hash is fine.
-    die "Unknown delayed object '$name'"
-	unless exists $self->{"_delayed_$name"}{args};
-
-    my $class = $self->{"_delayed_$name"}{class}
-	or die "Unknown class for delayed object '$name'";
-
-    $self->_load_module($class);
-    return $class->new( %{ $self->{"_delayed_$name"}{args} }, %args );
+    $args{container}{container} = $self;
+    weaken($args{container}{container}) if $INC{'Scalar/Util.pm'};
+    return $self->call_method($name, 'new', %args);
 }
 
 sub delayed_object_params
@@ -181,14 +207,14 @@ sub delayed_object_params
     my ($self, $name, %args) = @_;
 
     die "Unknown delayed object '$name'"
-	unless exists $self->{"_delayed_$name"}{args};
+	unless exists $self->{container}{delayed}{$name};
 
     if (%args)
     {
-	@{ $self->{"_delayed_$name"}{args} }{ keys(%args) } = values(%args);
+	@{ $self->{container}{delayed}{$name}{args} }{ keys(%args) } = values(%args);
     }
 
-    return %{ $self->{"_delayed_$name"}{args} };
+    return %{ $self->{container}{delayed}{$name}{args} };
 }
 
 sub _get_contained_args
@@ -206,26 +232,11 @@ sub _get_contained_args
     # pass on to its own contained objects
     my $allowed = $contained_class->allowed_params($args);
 
-    my $spec = $class->validation_spec;
-
     my %contained_args;
-    foreach (keys %$allowed)
-    {
+    foreach (keys %$allowed) {
 	$contained_args{$_} = $args->{$_} if exists $args->{$_};
-
-	# If both the container _and_ the contained object accept the
-	# same param we should not delete it, it goes to both (policy???)
-	delete $args->{$_} unless exists $spec->{$_};
     }
     return \%contained_args;
-}
-
-sub _make_contained_object
-{
-    my ($class, $contained_class, $args) = @_;
-
-    my $contained_args = $class->_get_contained_args($contained_class, $args);
-    return $contained_class->new(%$contained_args);
 }
 
 sub _load_module {
@@ -241,7 +252,7 @@ sub _load_module {
 
 # Iterate through this object's @ISA and find all entries in
 # 'contained_objects' list.  Return as a hash.
-sub get_contained_objects
+sub get_contained_object_spec
 {
     my $class = ref($_[0]) || shift;
 
@@ -250,7 +261,7 @@ sub get_contained_objects
     no strict 'refs';
     foreach my $superclass (@{ "${class}::ISA" }) {
 	next unless $superclass->isa(__PACKAGE__);
-	my %superparams = $superclass->get_contained_objects;
+	my %superparams = $superclass->get_contained_object_spec;
 	@c{keys %superparams} = values %superparams;  # Add %superparams to %c
     }
 
@@ -264,7 +275,7 @@ sub allowed_params
 
     my %p = %{ $class->validation_spec };
 
-    my %c = $class->get_contained_objects;
+    my %c = $class->get_contained_object_spec;
 
     foreach my $name (keys %c)
     {
@@ -344,13 +355,7 @@ sub validation_spec
 	@p{keys %$superparams} = values %$superparams;
     }
 
-    # We may need to allow some '_delayed_$name' parameters
-    my %specs = $class->get_contained_objects;
-    while (my ($name, $spec) = each %specs) {
-	next unless ref $spec;
-	next unless $spec->{delayed};
-	$p{"_delayed_$name"} = { type => HASHREF };
-    }
+    $p{container} = { type => HASHREF };
 
     return \%p;
 }
@@ -437,7 +442,7 @@ A the moment, the only possible constructor method is C<new()>.  If
 you need to create other constructor methods, they should also call
 C<SUPER::new()>, or possibly even your class's C<new()> method.
 
-=head2 contained_objects()
+=head2 __PACKAGE__->contained_objects()
 
 This class method is used to register what other objects, if any, a given
 class creates.  It is called with a hash whose keys are the parameter
@@ -471,7 +476,7 @@ than once.  The constructors will still enjoy the automatic passing of
 parameters to the correct class.  See the C<create_delayed_object()>
 for more.
 
-=head2 valid_params()
+=head2 __PACKAGE__->valid_params()
 
 The C<valid_params()> method is similar to the C<contained_objects()>
 method in that it is a class method that declares properties of the
@@ -508,7 +513,7 @@ any extra entries like this are simply ignored, so you are free to put
 extra information in the specifications as long as it doesn't overlap
 with what C<Class::Container> or C<Params::Validate> are looking for.
 
-=head2 create_delayed_object()
+=head2 $self->create_delayed_object()
 
 If a contained object was declared with C<< delayed => 1 >>, use this
 method to create an instance of the object.  Note that this is an
@@ -523,23 +528,32 @@ passed to the C<new()> method of the object being created, overriding
 any parameters previously passed to the container class constructor.
 (Could I possibly be more alliterative?  Veni, vedi, vici.)
 
-=head2 delayed_object_params()
+=head2 $self->delayed_object_params()
 
 Allows you to adjust the parameters that will be used to create any
 delayed objects in the future.  The first argument specifies the
 "name" of the object, and any additional arguments are key-value pairs
 that will become parameters to the delayed object.
 
-=head2 validation_spec()
+=head2 $self->validation_spec()
 
 Returns a hash reference suitable for passing to the
 C<Params::Validate> C<validate> function.  Does not include any
 arguments that can be passed to contained objects.
 
-=head2 allowed_params()
+=head2 $self->allowed_params()
 
 Returns a hash reference of every parameter this class will accept,
 including parameters it will pass on to its own contained objects.
+
+=head2 $self->container()
+
+Returns the object that created you.  This is remembered by storing a
+reference to that object, so we will use the C<Scalar::Utils>
+C<weakref()> function to avoid persistent circular references that
+would cause memory leaks.  If you don't have C<Scalar::Utils>
+installed, you'll need to break these references yourself - future
+versions of this module will probably require C<Scalar::Utils>.
 
 =head1 SEE ALSO
 
