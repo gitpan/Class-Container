@@ -182,6 +182,27 @@ METHODS
     In most cases you shouldn't care what object created you, so use this method
     sparingly.
 
+  $self->show_containers , 'Package'->show_containers
+
+    This method returns a string meant to describe the containment relationships
+    among classes. You should not depend on the specific formatting of the
+    string, because I may change things in a future release to make it prettier.
+
+    For example, the HTML::Mason code returns the following when you do
+    "$interp->show_containers":
+
+     HTML::Mason::Interp=HASH(0x238944)
+       resolver -> HTML::Mason::Resolver::File
+       compiler -> HTML::Mason::Compiler::ToObject
+         lexer -> HTML::Mason::Lexer
+       request -> HTML::Mason::Request (delayed)
+         buffer -> HTML::Mason::Buffer (delayed)
+
+    Currently, containment is shown by indentation, so the Interp object
+    contains a resolver and a compiler, and a delayed request (or several
+    delayed requests). The compiler contains a lexer, and each request contains
+    a delayed buffer (or several delayed buffers).
+
 SEE ALSO
     the Params::Validate manpage, the HTML::Mason manpage
 
