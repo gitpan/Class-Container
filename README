@@ -77,9 +77,6 @@ DESCRIPTION
     likely be necessary.
 
 METHODS
-    The most important methods provided are "valid_params()" and
-    "contained_objects()", both of which are class methods.
-
   new()
 
     Any class that inherits from "Class::Container" should also inherit its
@@ -129,27 +126,36 @@ METHODS
       __PACKAGE__->contained_objects( train => { class => 'Big::Train',
                                                  delayed => 1 } );
 
-  __PACKAGE__->valid_params()
+  __PACKAGE__->valid_params(...)
 
-    The "valid_params()" method is similar to the "contained_objects()" method
-    in that it is a class method that declares properties of the current class.
-    It is called in order to register a set of parameters which are valid for a
-    class's "new()" constructor method. It is called with a hash that contains
-    parameter names as its keys and validation specifications as values. This
-    validation specification is largely the same as that used by the
-    "Params::Validate" module, because we use "Params::Validate" internally.
+    Specifies the parameters accepted by this class's "new()" method as a set of
+    key/value pairs. Any parameters accepted by a superclass/subclass will also
+    be accepted, as well as any parameters accepted by contained objects. This
+    method is a get/set accessor method, so it returns a reference to a hash of
+    these key/value pairs. As a special case, if you wish to set the valid
+    params to an empty set and you previously set it to a non-empty set, you may
+    call "__PACKAGE__->valid_params(undef)".
 
-    As an example, HTML::Mason::Compiler contains the following:
+    "valid_params()" is called with a hash that contains parameter names as its
+    keys and validation specifications as values. This validation specification
+    is largely the same as that used by the "Params::Validate" module, because
+    we use "Params::Validate" internally.
 
+    As an example, consider the following situation:
+
+      use Class::Container;
+      use Params::Validate qw(:types);
       __PACKAGE__->valid_params
           (
-           allow_globals        => { parse => 'list',   type => ARRAYREF, default => [] },
-           default_escape_flags => { parse => 'string', type => SCALAR,   default => '' },
+           allow_globals        => { type => ARRAYREF, parse => 'list',   default => [] },
+           default_escape_flags => { type => SCALAR,   parse => 'string', default => '' },
            lexer                => { isa => 'HTML::Mason::Lexer' },
-           preprocess           => { parse => 'code',   type => CODEREF,  optional => 1 },
-           postprocess_perl     => { parse => 'code',   type => CODEREF,  optional => 1 },
-           postprocess_text     => { parse => 'code',   type => CODEREF,  optional => 1 },
+           preprocess           => { type => CODEREF,  parse => 'code',   optional => 1 },
+           postprocess_perl     => { type => CODEREF,  parse => 'code',   optional => 1 },
+           postprocess_text     => { type => CODEREF,  parse => 'code',   optional => 1 },
           );
+  
+      __PACKAGE__->contained_objects( lexer => 'HTML::Mason::Lexer' );
 
     The "type", "default", and "optional" parameters are part of the validation
     specification used by "Params::Validate". The various constants used,
@@ -215,15 +221,19 @@ METHODS
 
     Returns the object that created you. This is remembered by storing a
     reference to that object, so we use the "Scalar::Utils" "weakref()" function
-    to avoid persistent circular references that would cause memory leaks.
+    to avoid persistent circular references that would cause memory leaks. If
+    you don't have "Scalar::Utils" installed, we don't make these references in
+    the first place, and calling "container()" will result in a fatal error.
 
-    If you don't have "Scalar::Utils" installed, we don't make these references
-    in the first place, and calling "container()" will always return undef.
+    If you weren't created by another object via "Class::Container",
+    "container()" returns "undef".
 
     In most cases you shouldn't care what object created you, so use this method
     sparingly.
 
-  $self->show_containers , 'Package'->show_containers
+  $object->show_containers
+
+  $package->show_containers
 
     This method returns a string meant to describe the containment relationships
     among classes. You should not depend on the specific formatting of the

@@ -1,9 +1,14 @@
 #!/usr/bin/perl -w
 
+# Note - I create a bunch of classes in these tests and then change
+# their valid_params() and contained_objects() lists several times.
+# This isn't really supported behavior of this module, but it's
+# necessary to do it in the tests.
+
 use strict;
 
 use Test;
-BEGIN { plan tests => 28 };
+BEGIN { plan tests => 45 };
 use Class::Container;
 
 use Params::Validate qw(:types);
@@ -152,6 +157,9 @@ ok $@, '/Daughter/', $@;
 
   my $child = 'Subclass'->new;
   ok ref($child->{foo}), 'Bar', 'Subclass contained_object should override superclass';
+
+  my $spec = 'Subclass'->validation_spec;
+  ok $spec->{foo}{isa}, 'Bar';
 }
 
 {
@@ -189,3 +197,79 @@ ok $@, '/Daughter/', $@;
   ok $string2, '/  document -> Document2 \(delayed\)/';
 }
 
+{
+  local @Top::ISA = qw(Class::Container);
+  'Top'->valid_params( document => {isa => 'Document1'} );
+  'Top'->contained_objects( document => 'Document1' );
+  
+  my $contained = 'Top'->get_contained_object_spec;
+  ok  $contained->{document};
+  ok !$contained->{collection}; # Shouldn't have anything left over from the last block
+  
+  local @Document1::ISA = qw(Class::Container);
+  'Document1'->valid_params( doc1 => {type => SCALAR} );
+  
+  local @Document2::ISA = qw(Class::Container);
+  'Document2'->valid_params( doc2 => {type => SCALAR} );
+  
+  my $allowed = 'Top'->allowed_params();
+  ok  $allowed->{doc1};
+  ok !$allowed->{doc2};
+  
+  $allowed = 'Top'->allowed_params( document_class => 'Document2' );
+  ok  $allowed->{doc2};
+  ok !$allowed->{doc1};
+}
+
+{
+  local @Top::ISA = qw(Class::Container);
+  'Top'->_expire_caches;
+  'Top'->valid_params( document => {isa => 'Document1'} );
+  'Top'->contained_objects( document => 'Document1' );
+  
+  local @Document1::ISA = qw(Class::Container);
+  'Document1'->valid_params();
+  local @Document2::ISA = qw(Document1);
+  'Document2'->valid_params();
+  
+  my $t = new Top( document => bless {}, 'Document2' );
+  ok $t;
+  ok ref($t->{document}), 'Document2';
+}
+
+{
+  local @Top::ISA = qw(Class::Container);
+  'Top'->valid_params( document => {isa => 'Document'} );
+  'Top'->contained_objects( document => 'Document' );
+  
+  local @Document::ISA = qw(Class::Container);
+  'Document'->valid_params( sub => {isa => 'Class::Container'} );
+  'Document'->contained_objects( sub => 'Sub1' );
+  
+  local @Sub1::ISA = qw(Class::Container);
+  'Sub1'->valid_params( bar => {type => SCALAR} );
+  'Sub1'->contained_objects();
+
+  local @Sub2::ISA = qw(Class::Container);
+  'Sub2'->valid_params( foo => {type => SCALAR} );
+  'Sub2'->contained_objects();
+  
+  my $allowed = 'Top'->allowed_params();
+  ok  $allowed->{document};
+  ok  $allowed->{bar};
+  ok !$allowed->{foo};
+  
+  $allowed = 'Top'->allowed_params(sub_class => 'Sub2');
+  ok  $allowed->{document};
+  ok !$allowed->{bar};
+  ok  $allowed->{foo};
+}
+
+{
+  local @Top::ISA = qw(Class::Container);
+  Top->valid_params(foo => {type => SCALAR});
+  Top->contained_objects();
+  
+  ok 'Top'->valid_params;
+  ok 'Top'->valid_params->{foo}{type}, SCALAR;
+}

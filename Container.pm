@@ -1,6 +1,6 @@
 package Class::Container;
 
-$VERSION = '0.06';
+$VERSION = '0.07';
 $VERSION = eval $VERSION if $VERSION =~ /_/;
 
 my $HAVE_WEAKEN = 0;
@@ -10,7 +10,6 @@ BEGIN {
     Scalar::Util->import('weaken');
     $HAVE_WEAKEN = 1;
   };
-  warn "Scalar::Util not detected - container() method not available\n" if !$HAVE_WEAKEN and $^W;
   
   *weaken = sub {} unless defined &weaken;
 }
@@ -43,7 +42,6 @@ Params::Validate::validation_options( on_fail => sub { die @_ } );
 my %VALID_PARAMS = ();
 my %CONTAINED_OBJECTS = ();
 my %VALID_CACHE = ();
-my %ALLOWED_CACHE = ();
 my %CONTAINED_CACHE = ();
 
 sub new
@@ -141,30 +139,39 @@ sub show_containers {
 
   while (my ($name, $spec) = each %$specs) {
     my $class = $args{args}{"${name}_class"} || $spec->{class};
-    $out .= $class->show_containers($name,
-				    indent => "$args{indent}  ",
-				    args => $spec->{args},
-				    delayed => $spec->{delayed});
+    $self->_load_module($class);
+
+    if ($class->isa(__PACKAGE__)) {
+      $out .= $class->show_containers($name,
+				      indent => "$args{indent}  ",
+				      args => $spec->{args},
+				      delayed => $spec->{delayed});
+    } else {
+      $out .= "$args{indent}  $name -> $class\n";
+    }
   }
 
   return $out;
 }
 
 sub _expire_caches {
-  %ALLOWED_CACHE = %VALID_CACHE = %CONTAINED_CACHE = ();
+  %VALID_CACHE = %CONTAINED_CACHE = ();
 }
 
-sub valid_params
-{
-    my $class = shift;
+sub valid_params {
+  my $class = shift;
+  if (@_) {
     $class->_expire_caches;
-    $VALID_PARAMS{$class} = {@_};
+    $VALID_PARAMS{$class} = @_ == 1 && !defined($_[0]) ? {} : {@_};
+  }
+  return $VALID_PARAMS{$class};
 }
 
 sub contained_objects
 {
     my $class = shift;
     $class->_expire_caches;
+    $CONTAINED_OBJECTS{$class} = {};
     while (@_) {
       my ($name, $spec) = (shift, shift);
       $CONTAINED_OBJECTS{$class}{$name} = ref($spec) ? $spec : { class => $spec };
@@ -173,7 +180,7 @@ sub contained_objects
 
 sub container {
   my $self = shift;
-  return undef unless $HAVE_WEAKEN;
+  die "The ", ref($self), "->container() method requires installation of Scalar::Utils" unless $HAVE_WEAKEN;
   return $self->{container}{container};
 }
 
@@ -224,8 +231,8 @@ sub create_contained_objects
 	$container_stuff->{contained}{$name} = $to_create{$name};
 	$container_stuff->{contained}{$name}{delayed} = 1;
       } else {
-	$args{$name} = $to_create{$name}{class}->new(%{$to_create{$name}{args}});
-	$container_stuff->{contained}{$name}{class} = $to_create{$name}{class};
+	$args{$name} ||= $to_create{$name}{class}->new(%{$to_create{$name}{args}});
+	$container_stuff->{contained}{$name}{class} = ref $args{$name};
       }
     }
 
@@ -318,28 +325,6 @@ sub _load_module {
     }
 }
 
-# Iterate through this object's @ISA and find all entries in
-# 'contained_objects' list.  Return as a hash.
-sub get_contained_object_spec
-{
-    my $class = ref($_[0]) || shift;
-    return $CONTAINED_CACHE{$class} if $CONTAINED_CACHE{$class};
-
-    my %c = %{ $CONTAINED_OBJECTS{$class} || {} };
-
-    no strict 'refs';
-    foreach my $superclass (@{ "${class}::ISA" }) {
-	next unless $superclass->isa(__PACKAGE__);
-	my $superparams = $superclass->get_contained_object_spec;
-	foreach my $key (keys %$superparams) {
-	  # Let subclass take precedence
-	  $c{$key} = $superparams->{$key} unless exists $c{$key};
-	}
-    }
-
-    return $CONTAINED_CACHE{$class} = \%c;
-}
-
 sub allowed_params
 {
     my $class = shift;
@@ -354,12 +339,6 @@ sub allowed_params
     # 'interp_class' does.
 
     my $c = $class->get_contained_object_spec;
-    my $signature = join ($;,
-			  map {$_, $args->{"${_}_class"}}
-			  grep exists($args->{"${_}_class"}),
-			  keys %$c);
-    return $ALLOWED_CACHE{$class}{$signature} if $ALLOWED_CACHE{$class}{$signature};
-
     my %p = %{ $class->validation_spec };
 
     foreach my $name (keys %$c)
@@ -389,26 +368,37 @@ sub allowed_params
 	}
     }
 
-    return $ALLOWED_CACHE{$class}{$signature} = \%p;
+    return \%p;
 }
 
-sub validation_spec
-{
-    my $class = ref($_[0]) || shift;
-    return $VALID_CACHE{$class} if $VALID_CACHE{$class};
+sub _iterate_ISA {
+  my ($class, $look_in, $cache_in, $add_container) = @_;
 
-    my %p = %{ $VALID_PARAMS{$class} || {} };
+  return $cache_in->{$class} if $cache_in->{$class};
 
-    no strict 'refs';
-    foreach my $superclass (@{ "${class}::ISA" }) {
-	next unless $superclass->isa(__PACKAGE__);
-	my $superparams = $superclass->validation_spec;
-	@p{keys %$superparams} = values %$superparams;
-    }
+  my %out;
+  
+  no strict 'refs';
+  foreach my $superclass (@{ "${class}::ISA" }) {
+    next unless $superclass->isa(__PACKAGE__);
+    my $superparams = $superclass->_iterate_ISA($look_in, $cache_in, $add_container);
+    @out{keys %$superparams} = values %$superparams;
+  }
+  if (my $x = $look_in->{$class}) {
+    @out{keys %$x} = values %$x;
+  }
+  
+  $out{container} = { type => HASHREF } if $add_container;  # Urgh
 
-    $p{container} = { type => HASHREF };
+  return $cache_in->{$class} = \%out;
+}
 
-    return $VALID_CACHE{$class} = \%p;
+sub get_contained_object_spec {
+  return (ref($_[0]) || shift)->_iterate_ISA(\%CONTAINED_OBJECTS, \%CONTAINED_CACHE);
+}
+
+sub validation_spec {
+  return (ref($_[0]) || shift)->_iterate_ISA(\%VALID_PARAMS, \%VALID_CACHE, 1);
 }
 
 1;
@@ -511,9 +501,6 @@ C<Child> will likely be necessary.
 
 =head1 METHODS
 
-The most important methods provided are C<valid_params()> and
-C<contained_objects()>, both of which are class methods.
-
 =head2 new()
 
 Any class that inherits from C<Class::Container> should also inherit
@@ -566,28 +553,38 @@ To declare an object as "delayed", call this method like this:
   __PACKAGE__->contained_objects( train => { class => 'Big::Train',
                                              delayed => 1 } );
 
-=head2 __PACKAGE__->valid_params()
+=head2 __PACKAGE__->valid_params(...)
 
-The C<valid_params()> method is similar to the C<contained_objects()>
-method in that it is a class method that declares properties of the
-current class.  It is called in order to register a set of parameters
-which are valid for a class's C<new()> constructor method.  It is
-called with a hash that contains parameter names as its keys and
-validation specifications as values.  This validation specification
-is largely the same as that used by the C<Params::Validate> module,
-because we use C<Params::Validate> internally.
+Specifies the parameters accepted by this class's C<new()> method as a
+set of key/value pairs.  Any parameters accepted by a
+superclass/subclass will also be accepted, as well as any parameters
+accepted by contained objects.  This method is a get/set accessor
+method, so it returns a reference to a hash of these key/value pairs.
+As a special case, if you wish to set the valid params to an empty set
+and you previously set it to a non-empty set, you may call 
+C<< __PACKAGE__->valid_params(undef) >>.
 
-As an example, HTML::Mason::Compiler contains the following:
+C<valid_params()> is called with a hash that contains parameter names
+as its keys and validation specifications as values.  This validation
+specification is largely the same as that used by the
+C<Params::Validate> module, because we use C<Params::Validate>
+internally.
 
+As an example, consider the following situation:
+
+  use Class::Container;
+  use Params::Validate qw(:types);
   __PACKAGE__->valid_params
       (
-       allow_globals        => { parse => 'list',   type => ARRAYREF, default => [] },
-       default_escape_flags => { parse => 'string', type => SCALAR,   default => '' },
+       allow_globals        => { type => ARRAYREF, parse => 'list',   default => [] },
+       default_escape_flags => { type => SCALAR,   parse => 'string', default => '' },
        lexer                => { isa => 'HTML::Mason::Lexer' },
-       preprocess           => { parse => 'code',   type => CODEREF,  optional => 1 },
-       postprocess_perl     => { parse => 'code',   type => CODEREF,  optional => 1 },
-       postprocess_text     => { parse => 'code',   type => CODEREF,  optional => 1 },
+       preprocess           => { type => CODEREF,  parse => 'code',   optional => 1 },
+       postprocess_perl     => { type => CODEREF,  parse => 'code',   optional => 1 },
+       postprocess_text     => { type => CODEREF,  parse => 'code',   optional => 1 },
       );
+  
+  __PACKAGE__->contained_objects( lexer => 'HTML::Mason::Lexer' );
 
 The C<type>, C<default>, and C<optional> parameters are part of the
 validation specification used by C<Params::Validate>.  The various
@@ -657,16 +654,19 @@ accurate.
 Returns the object that created you.  This is remembered by storing a
 reference to that object, so we use the C<Scalar::Utils> C<weakref()>
 function to avoid persistent circular references that would cause
-memory leaks.  
+memory leaks.  If you don't have C<Scalar::Utils> installed, we don't
+make these references in the first place, and calling C<container()>
+will result in a fatal error.
 
-If you don't have C<Scalar::Utils> installed, we don't make these
-references in the first place, and calling C<container()> will always
-return undef.
+If you weren't created by another object via C<Class::Container>,
+C<container()> returns C<undef>.
 
 In most cases you shouldn't care what object created you, so use this
 method sparingly.
 
-=head2 $self->show_containers , 'Package'->show_containers
+=head2 $object->show_containers
+
+=head2 $package->show_containers
 
 This method returns a string meant to describe the containment
 relationships among classes.  You should not depend on the specific
