@@ -57,7 +57,6 @@ DESCRIPTION
         automatically and transparently
 
   Scenario
-
     Suppose you've got a class called "Parent", which contains an object of
     the class "Child", which in turn contains an object of the class
     "GrandChild". Each class creates the object that it contains. Each class
@@ -86,7 +85,6 @@ DESCRIPTION
 
 METHODS
   new()
-
     Any class that inherits from "Class::Container" should also inherit its
     "new()" method. You can do this simply by omitting it in your class, or
     by calling "SUPER::new(@_)" as indicated in the SYNOPSIS. The "new()"
@@ -98,7 +96,6 @@ METHODS
     internally.
 
   __PACKAGE__->contained_objects()
-
     This class method is used to register what other objects, if any, a
     given class creates. It is called with a hash whose keys are the
     parameter names that the contained class's constructor accepts, and
@@ -138,7 +135,6 @@ METHODS
                                                  delayed => 1 } );
 
   __PACKAGE__->valid_params(...)
-
     Specifies the parameters accepted by this class's "new()" method as a
     set of key/value pairs. Any parameters accepted by a superclass/subclass
     will also be accepted, as well as any parameters accepted by contained
@@ -183,7 +179,6 @@ METHODS
     what "Class::Container" or "Params::Validate" are looking for.
 
   $self->create_delayed_object()
-
     If a contained object was declared with "delayed => 1", use this method
     to create an instance of the object. Note that this is an object method,
     not a class method:
@@ -198,28 +193,25 @@ METHODS
     Veni, vedi, vici.)
 
   $self->delayed_object_params($name, [params])
-
     Allows you to adjust the parameters that will be used to create any
     delayed objects in the future. The first argument specifies the "name"
     of the object, and any additional arguments are key-value pairs that
     will become parameters to the delayed object.
 
-    When called with only a "$name" argument and no list of parameters to
-    set, returns a hash reference containing the parameters that will be
-    passed when creating objects of this type.
+    When called with only a $name argument and no list of parameters to set,
+    returns a hash reference containing the parameters that will be passed
+    when creating objects of this type.
 
   $self->delayed_object_class($name)
-
     Returns the class that will be used when creating delayed objects of the
     given name. Use this sparingly - in most situations you shouldn't care
     what the class is.
 
   __PACKAGE__->decorates()
-
     Version 0.09 of Class::Container added [as yet experimental] support for
     so-called "decorator" relationships, using the term as defined in
     *Design Patterns* by Gamma, et al. (the Gang of Four book). To declare a
-    class as a decorator of another class, simply set "@ISA" to the class
+    class as a decorator of another class, simply set @ISA to the class
     which will be decorated, and call the decorator class's "decorates()"
     method.
 
@@ -232,13 +224,11 @@ METHODS
     layer of indirection.
 
   $self->validation_spec()
-
     Returns a hash reference suitable for passing to the "Params::Validate"
     "validate" function. Does *not* include any arguments that can be passed
     to contained objects.
 
   $class->allowed_params(\%args)
-
     Returns a hash reference of every parameter this class will accept,
     *including* parameters it will pass on to its own contained objects. The
     keys are the parameter names, and the values are their corresponding
@@ -253,7 +243,6 @@ METHODS
     accurate.
 
   $self->container()
-
     Returns the object that created you. This is remembered by storing a
     reference to that object, so we use the "Scalar::Utils" "weakref()"
     function to avoid persistent circular references that would cause memory
@@ -268,9 +257,7 @@ METHODS
     method sparingly.
 
   $object->show_containers
-
   $package->show_containers
-
     This method returns a string meant to describe the containment
     relationships among classes. You should not depend on the specific
     formatting of the string, because I may change things in a future
@@ -292,11 +279,10 @@ METHODS
     contains a delayed buffer (or several delayed buffers).
 
   $object->dump_parameters
-
     Returns a hash reference containing a set of parameters that should be
     sufficient to re-create the given object using its class's "new()"
     method. This is done by fetching the current value for each declared
-    parameter (i.e. looking in "$object" for hash entries of the same name),
+    parameter (i.e. looking in $object for hash entries of the same name),
     then recursing through all contained objects and doing the same.
 
     A few words of caution here. First, the dumped parameters represent the
@@ -319,7 +305,7 @@ METHODS
      }
 
 SEE ALSO
-    the Params::Validate manpage
+    Params::Validate
 
 AUTHOR
     Originally by Ken Williams <ken@mathforum.org> and Dave Rolsky

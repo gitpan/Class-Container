@@ -9,5 +9,4 @@ README
 t/01-basic.t
 t/02-decorator.t
 t/classes.pl
-
 SIGNATURE    Added here by Module::Build
