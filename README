@@ -33,8 +33,8 @@ SYNOPSIS
 DESCRIPTION
     This class facilitates building frameworks of several classes that
     inter-operate. It was first designed and built for "HTML::Mason", in which
-    the Compiler, Lexer, Interpreter, Resolver, Buffer, and several other
-    objects must create each other transparently, passing the appropriate
+    the Compiler, Lexer, Interpreter, Resolver, Component, Buffer, and several
+    other objects must create each other transparently, passing the appropriate
     parameters to the right class.
 
     The main features of "Class::Container" are:
@@ -42,11 +42,9 @@ DESCRIPTION
     * Declaration of parameters used by each member in a class framework
     * Transparent passing of constructor parameters to the class that needs them
     * Ability to create one (automatic) or many (manual) contained objects
-    automatically
-    * Automatic checking of duplicate class parameter names
+    automatically and transparently
     The most important methods provided are "valid_params()" and
-    "contained_objects()", both of which are class methods. There is not a
-    "new()" method, that is expected to be defined in a derived class.
+    "contained_objects()", both of which are class methods.
 
 METHODS
   new()
@@ -57,7 +55,7 @@ METHODS
     ensures that the proper parameters and objects are passed to the proper
     constructor methods.
 
-    A the moment, the only possible constructor method is "new()". If you need
+    At the moment, the only possible constructor method is "new()". If you need
     to create other constructor methods, they should also call "SUPER::new()",
     or possibly even your class's "new()" method.
 
@@ -79,15 +77,16 @@ METHODS
     a "lexer" parameter and, if no such parameter is given, an object of the
     "HTML::Mason::Lexer" class should be constructed.
 
-    We also implement a bit of magic here, so that if
-    "HTML::Mason::Compiler->new()" is called with a "lexer_class" parameter, it
-    will load the class, instantiate a new object of that given class, and use
-    that for the "lexer" object. In fact, we're smart enough to notice if
-    parameters given to "HTML::Mason::Compiler->new()" actually should go to the
-    "lexer" contained object, and it will make sure that they get passed along.
+    We implement a bit of magic here, so that if "HTML::Mason::Compiler->new()"
+    is called with a "lexer_class" parameter, it will load the indicated class
+    (presumably a subclass of "HTML::Mason::Lexer"), instantiate a new object of
+    that class, and use it for the Compiler's "lexer" object. We're also smart
+    enough to notice if parameters given to "HTML::Mason::Compiler->new()"
+    actually should go to the "lexer" contained object, and it will make sure
+    that they get passed along.
 
     Furthermore, an object may be declared as "delayed", which means that an
-    object *won't* be created when its enclosing class is constructed. Instead,
+    object *won't* be created when its containing class is constructed. Instead,
     these objects will be created "on demand", potentially more than once. The
     constructors will still enjoy the automatic passing of parameters to the
     correct class. See the "create_delayed_object()" for more.
