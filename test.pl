@@ -3,7 +3,7 @@
 use strict;
 
 use Test;
-BEGIN {plan tests => 7};
+BEGIN {plan tests => 6};
 use Class::Container;
 
 use Params::Validate qw(:types);
@@ -20,6 +20,7 @@ my $SCALAR = SCALAR;   # So we don't have to keep importing it below
 # Define the relationships
 {
   package Parent;
+  push @Parent::ISA, 'Foo';  # Make sure it works with non-container superclasses
   # Has one son and several daughters
   __PACKAGE__->valid_params( parent_val => { type => $SCALAR },
 			     son => {isa => 'Son'},
@@ -40,7 +41,6 @@ my $SCALAR = SCALAR;   # So we don't have to keep importing it below
   package Son;
   push @Son::ISA, 'Boy';
   __PACKAGE__->valid_params( mood => { type => $SCALAR } );
-  __PACKAGE__->make_accessors(':all');
 }
 
 {
@@ -67,10 +67,6 @@ ok eval {new Parent(%args)};
 
 # Make sure sub-objects are created with proper values
 ok eval {Parent->new(%args)->{son}->{mood} eq 'bubbly'};
-
-# Try using accessor
-ok eval {Parent->new(%args)->{son}->mood eq 'bubbly'};
-
 
 
 # Create a delayed object
