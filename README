@@ -41,10 +41,14 @@ DESCRIPTION
 
     The main features of "Class::Container" are:
 
-    * Declaration of parameters used by each member in a class framework
-    * Transparent passing of constructor parameters to the class that needs them
-    * Ability to create one (automatic) or many (manual) contained objects
-    automatically and transparently
+    *   Declaration of parameters used by each member in a class framework
+
+    *   Transparent passing of constructor parameters to the class that needs
+        them
+
+    *   Ability to create one (automatic) or many (manual) contained objects
+        automatically and transparently
+
   Scenario
 
     Suppose you've got a class called "Parent", which creates object of the
@@ -194,10 +198,18 @@ METHODS
     "validate" function. Does *not* include any arguments that can be passed to
     contained objects.
 
-  $self->allowed_params()
+  $class->allowed_params(\%args)
 
     Returns a hash reference of every parameter this class will accept,
-    *including* parameters it will pass on to its own contained objects.
+    *including* parameters it will pass on to its own contained objects. The
+    keys are the parameter names, and the values are their corresponding
+    specifications from their "valid_params()" definitions. If a parameter is
+    used by both the current object and one of its contained objects, the
+    specification returned will be from the container class, not the contained.
+
+    Because the parameters accepted by "new()" can vary based on the parameters
+    *passed* to "new()", you can pass any parameters to the "allowed_params()"
+    method too, ensuring that the hash you get back is accurate.
 
   $self->container()
 

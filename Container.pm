@@ -1,6 +1,6 @@
 package Class::Container;
 
-$VERSION = '0.05';
+$VERSION = '0.06';
 $VERSION = eval $VERSION if $VERSION =~ /_/;
 
 my $HAVE_WEAKEN = 0;
@@ -42,19 +42,19 @@ Params::Validate::validation_options( on_fail => sub { die @_ } );
 
 my %VALID_PARAMS = ();
 my %CONTAINED_OBJECTS = ();
+my %VALID_CACHE = ();
+my %ALLOWED_CACHE = ();
+my %CONTAINED_CACHE = ();
 
 sub new
 {
     my $proto = shift;
     my $class = ref($proto) || $proto;
-    my @args = $class->create_contained_objects(@_);
-    return bless {
-		  validate_with(
-				params => \@args,
-				spec => $class->validation_spec,
-				called => "$class->new()",
-			       )
-		 }, $class;
+    return bless scalar validate_with(
+				      params => $class->create_contained_objects(@_),
+				      spec   => $class->validation_spec,
+				      called => "$class->new()",
+				     ), $class;
 }
 
 sub all_specs
@@ -89,7 +89,8 @@ sub all_specs
 		$default = '[' . join(', ', map "'$_'", @$default) . ']';
 	    } elsif (ref($default) eq 'Regexp') {
 		$type = 'regex';
-		$default =~ s/^\(\?(\w*)-\w*:(.*)\)/\/$2\/$1/;
+		$default =~ s,^\(\?(\w*)-\w*:(.*)\),/$2/$1,;
+		$default = "qr$default";
 	    }
 	    unless ($type) {
 	      # Guess from the validation spec
@@ -149,15 +150,21 @@ sub show_containers {
   return $out;
 }
 
+sub _expire_caches {
+  %ALLOWED_CACHE = %VALID_CACHE = %CONTAINED_CACHE = ();
+}
+
 sub valid_params
 {
     my $class = shift;
+    $class->_expire_caches;
     $VALID_PARAMS{$class} = {@_};
 }
 
 sub contained_objects
 {
     my $class = shift;
+    $class->_expire_caches;
     while (@_) {
       my ($name, $spec) = (shift, shift);
       $CONTAINED_OBJECTS{$class}{$name} = ref($spec) ? $spec : { class => $spec };
@@ -186,16 +193,21 @@ sub call_method {
 sub create_contained_objects
 {
     # Typically $self doesn't exist yet, $_[0] is a string classname
-    my ($class, %args) = @_;
+    my $class = shift;
+
+    my $c = $class->get_contained_object_spec;
+    return {@_, container => {}} unless %$c;
+    
+    my %args = @_;
 
     # This one is special, don't pass to descendants
     my $container_stuff = delete($args{container}) || {};
 
-    my %c = %{ $class->get_contained_object_spec };
+    keys %$c; # Reset the iterator - why can't I do this in get_contained_object_spec??
     my %contained_args;
     my %to_create;
 
-    while (my ($name, $spec) = each %c) {
+    while (my ($name, $spec) = each %$c) {
       # Figure out exactly which class to make an object of
       my ($contained_class, $c_args) = $class->_get_contained_args($name, \%args);
       @contained_args{ keys %$c_args } = ();  # Populate with keys
@@ -203,7 +215,7 @@ sub create_contained_objects
       $to_create{$name}{args} = $c_args;
     }
     
-    while (my ($name, $spec) = each %c) {
+    while (my ($name, $spec) = each %$c) {
       # This delete() needs to be outside the previous loop, because
       # multiple contained objects might need to see it
       delete $args{"${name}_class"};
@@ -223,7 +235,7 @@ sub create_contained_objects
     delete @args{ grep {!exists $my_spec->{$_}} keys %contained_args };
 
     $args{container} = $container_stuff;
-    return %args;
+    return \%args;
 }
 
 sub create_delayed_object
@@ -311,6 +323,7 @@ sub _load_module {
 sub get_contained_object_spec
 {
     my $class = ref($_[0]) || shift;
+    return $CONTAINED_CACHE{$class} if $CONTAINED_CACHE{$class};
 
     my %c = %{ $CONTAINED_OBJECTS{$class} || {} };
 
@@ -324,14 +337,14 @@ sub get_contained_object_spec
 	}
     }
 
-    return \%c;
+    return $CONTAINED_CACHE{$class} = \%c;
 }
 
 sub allowed_params
 {
     my $class = shift;
     my $args = ref($_[0]) ? shift : {@_};
-
+    
     # Strategy: the allowed_params of this class consists of the
     # validation_spec of this class, merged with the allowed_params of
     # all contained classes.  The specific contained classes may be
@@ -340,11 +353,16 @@ sub allowed_params
     # to our allowed_params (because it's already created) but
     # 'interp_class' does.
 
+    my $c = $class->get_contained_object_spec;
+    my $signature = join ($;,
+			  map {$_, $args->{"${_}_class"}}
+			  grep exists($args->{"${_}_class"}),
+			  keys %$c);
+    return $ALLOWED_CACHE{$class}{$signature} if $ALLOWED_CACHE{$class}{$signature};
+
     my %p = %{ $class->validation_spec };
 
-    my %c = %{ $class->get_contained_object_spec };
-
-    foreach my $name (keys %c)
+    foreach my $name (keys %$c)
     {
 	# Can accept a 'foo' parameter - should already be in the validation_spec.
 	# Also, its creation parameters should already have been extracted from $args,
@@ -357,7 +375,7 @@ sub allowed_params
 	  $contained_class = $args->{"${name}_class"};
 	  $p{"${name}_class"} = { type => SCALAR, parse => 'string' };  # Add to spec
 	} else {
-	  $contained_class = $c{$name}{class};
+	  $contained_class = $c->{$name}{class};
 	}
 	
 	# We have to make sure it is loaded before we try calling allowed_params()
@@ -371,12 +389,13 @@ sub allowed_params
 	}
     }
 
-    return \%p;
+    return $ALLOWED_CACHE{$class}{$signature} = \%p;
 }
 
 sub validation_spec
 {
     my $class = ref($_[0]) || shift;
+    return $VALID_CACHE{$class} if $VALID_CACHE{$class};
 
     my %p = %{ $VALID_PARAMS{$class} || {} };
 
@@ -389,7 +408,7 @@ sub validation_spec
 
     $p{container} = { type => HASHREF };
 
-    return \%p;
+    return $VALID_CACHE{$class} = \%p;
 }
 
 1;
@@ -444,13 +463,19 @@ The main features of C<Class::Container> are:
 
 =over 4
 
-=item * Declaration of parameters used by each member in a class
+=item *
+
+Declaration of parameters used by each member in a class
 framework
 
-=item * Transparent passing of constructor parameters to the class
+=item *
+
+Transparent passing of constructor parameters to the class
 that needs them
 
-=item * Ability to create one (automatic) or many (manual) contained
+=item *
+
+Ability to create one (automatic) or many (manual) contained
 objects automatically and transparently
 
 =back
@@ -612,10 +637,20 @@ Returns a hash reference suitable for passing to the
 C<Params::Validate> C<validate> function.  Does I<not> include any
 arguments that can be passed to contained objects.
 
-=head2 $self->allowed_params()
+=head2 $class->allowed_params(\%args)
 
 Returns a hash reference of every parameter this class will accept,
 I<including> parameters it will pass on to its own contained objects.
+The keys are the parameter names, and the values are their
+corresponding specifications from their C<valid_params()> definitions.
+If a parameter is used by both the current object and one of its
+contained objects, the specification returned will be from the
+container class, not the contained.
+
+Because the parameters accepted by C<new()> can vary based on the
+parameters I<passed> to C<new()>, you can pass any parameters to the
+C<allowed_params()> method too, ensuring that the hash you get back is
+accurate.
 
 =head2 $self->container()
 
