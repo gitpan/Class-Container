@@ -1,6 +1,6 @@
 package Class::Container;
 
-$VERSION = '0.08';
+$VERSION = '0.09';
 $VERSION = eval $VERSION if $VERSION =~ /_/;
 
 my $HAVE_WEAKEN = 0;
@@ -15,6 +15,7 @@ BEGIN {
 }
 
 use strict;
+use Carp;
 
 # The create_contained_objects() method lets one object
 # (e.g. Compiler) transparently create another (e.g. Lexer) by passing
@@ -43,6 +44,7 @@ my %VALID_PARAMS = ();
 my %CONTAINED_OBJECTS = ();
 my %VALID_CACHE = ();
 my %CONTAINED_CACHE = ();
+my %DECORATEES = ();
 
 sub new
 {
@@ -129,13 +131,14 @@ sub dump_parameters {
   die "dump_parameters() can only be called as an object method, not a class method" unless $class;
   
   my %params;
-  foreach my $param (keys %{ $VALID_PARAMS{$class} }) {
-    my $spec = $VALID_PARAMS{$class}{$param};
+  foreach my $param (keys %{ $class->validation_spec }) {
+    next if $param eq 'container';
+    my $spec = $class->validation_spec->{$param};
     next if (exists $spec->{default} || $spec->{optional}) and !defined $self->{$param};
     $params{$param} = $self->{$param};
   }
   
-  foreach my $name (keys %{ $CONTAINED_OBJECTS{$class} }) {
+  foreach my $name (keys %{ $class->get_contained_object_spec }) {
     my $subparams = ($self->{container}{contained}{$name}{delayed} ?
 		     $self->{container}{contained}{$name}{args} :
 		     $params{$name}->dump_parameters);
@@ -186,7 +189,7 @@ sub valid_params {
     $class->_expire_caches;
     $VALID_PARAMS{$class} = @_ == 1 && !defined($_[0]) ? {} : {@_};
   }
-  return $VALID_PARAMS{$class};
+  return $VALID_PARAMS{$class} ||= {};
 }
 
 sub contained_objects
@@ -198,6 +201,43 @@ sub contained_objects
       my ($name, $spec) = (shift, shift);
       $CONTAINED_OBJECTS{$class}{$name} = ref($spec) ? $spec : { class => $spec };
     }
+}
+
+sub _decorator_AUTOLOAD {
+  my $self = shift;
+  no strict 'vars';
+  my ($method) = $AUTOLOAD =~ /([^:]+)$/;
+  return if $method eq 'DESTROY';
+  die qq{Can't locate object method "$method" via package $self} unless ref($self);
+  my $subr = $self->{_decorates}->can($method)
+    or die qq{Can't locate object method "$method" via package } . ref($self);
+  unshift @_, $self->{_decorates};
+  goto $subr;
+}
+
+sub _decorator_CAN {
+  my ($self, $method) = @_;
+  return $self->SUPER::can($method) if $self->SUPER::can($method);
+  if (ref $self) {
+    return $self->{_decorates}->can($method) if $self->{_decorates};
+    return undef;
+  } else {
+    return $DECORATEES{$self}->can($method);
+  }
+}
+
+sub decorates {
+  my ($class, $super) = @_;
+  
+  no strict 'refs';
+  $super ||= ${$class . '::ISA'}[0];
+  
+  # Pass through unknown method invocations
+  *{$class . '::AUTOLOAD'} = \&_decorator_AUTOLOAD;
+  *{$class . '::can'} = \&_decorator_CAN;
+  
+  $DECORATEES{$class} = $super;
+  $VALID_PARAMS{$class}{_decorates} = { isa => $super, optional => 1 };
 }
 
 sub container {
@@ -225,9 +265,23 @@ sub create_contained_objects
     my $class = shift;
 
     my $c = $class->get_contained_object_spec;
-    return {@_, container => {}} unless %$c;
+    return {@_, container => {}} unless %$c or $DECORATEES{$class};
     
     my %args = @_;
+    
+    if ($DECORATEES{$class}) {
+      # Fix format
+      $args{decorate_class} = [$args{decorate_class}]
+	if $args{decorate_class} and !ref($args{decorate_class});
+      
+      # Figure out which class to decorate
+      my $decorate;
+      if (my $c = $args{decorate_class}) {
+	$decorate = @$c ? shift @$c : undef;
+	delete $args{decorate_class} unless @$c;
+      }
+      $c->{_decorates} = { class => $decorate } if $decorate;
+    }      
 
     # This one is special, don't pass to descendants
     my $container_stuff = delete($args{container}) || {};
@@ -235,13 +289,13 @@ sub create_contained_objects
     keys %$c; # Reset the iterator - why can't I do this in get_contained_object_spec??
     my %contained_args;
     my %to_create;
-
+    
     while (my ($name, $spec) = each %$c) {
       # Figure out exactly which class to make an object of
       my ($contained_class, $c_args) = $class->_get_contained_args($name, \%args);
       @contained_args{ keys %$c_args } = ();  # Populate with keys
-      $to_create{$name}{class} = $contained_class;
-      $to_create{$name}{args} = $c_args;
+      $to_create{$name} = { class => $contained_class,
+			    args => $c_args };
     }
     
     while (my ($name, $spec) = each %$c) {
@@ -262,6 +316,7 @@ sub create_contained_objects
     # our contained object specs but not in ours.
     my $my_spec = $class->validation_spec;
     delete @args{ grep {!exists $my_spec->{$_}} keys %contained_args };
+    delete $c->{_decorates} if $DECORATEES{$class};
 
     $args{container} = $container_stuff;
     return \%args;
@@ -270,7 +325,7 @@ sub create_contained_objects
 sub create_delayed_object
 {
   my ($self, $name) = (shift, shift);
-  die "Unknown delayed item '$name'" unless $self->{container}{contained}{$name}{delayed};
+  croak "Unknown delayed item '$name'" unless $self->{container}{contained}{$name}{delayed};
 
   if ($HAVE_WEAKEN) {
     push @_, container => {container => $self};
@@ -283,7 +338,7 @@ sub delayed_object_class
 {
     my $self = shift;
     my $name = shift;
-    die "Unknown delayed item '$name'"
+    croak "Unknown delayed item '$name'"
 	unless $self->{container}{contained}{$name}{delayed};
 
     return $self->{container}{contained}{$name}{class};
@@ -292,16 +347,22 @@ sub delayed_object_class
 sub contained_class
 {
     my ($self, $name) = @_;
-    die "Unknown contained item '$name'"
+    croak "Unknown contained item '$name'"
 	unless my $spec = $self->{container}{contained}{$name};
     return $spec->{class};
 }
 
 sub delayed_object_params
 {
-    my ($self, $name, %args) = @_;
-    die "Unknown delayed object '$name'"
+    my ($self, $name) = (shift, shift);
+    croak "Unknown delayed object '$name'"
 	unless $self->{container}{contained}{$name}{delayed};
+
+    if (@_ == 1) {
+	return $self->{container}{contained}{$name}{args}{$_[0]};
+    }
+
+    my %args = @_;
 
     if (keys %args)
     {
@@ -318,10 +379,10 @@ sub _get_contained_args
     my ($class, $name, $args) = @_;
     
     my $spec = $class->get_contained_object_spec->{$name}
-      or die "Unknown contained object '$name'";
+      or croak "Unknown contained object '$name'";
 
     my $contained_class = $args->{"${name}_class"} || $spec->{class};
-    die "Invalid class name '$contained_class'"
+    croak "Invalid class name '$contained_class'"
 	unless $contained_class =~ /^[\w:]+$/;
 
     $class->_load_module($contained_class);
@@ -343,7 +404,7 @@ sub _load_module {
     {
 	no strict 'refs';
 	eval "use $module";
-	die $@ if $@;
+	croak $@ if $@;
     }
 }
 
@@ -362,7 +423,7 @@ sub allowed_params
 
     my $c = $class->get_contained_object_spec;
     my %p = %{ $class->validation_spec };
-
+    
     foreach my $name (keys %$c)
     {
 	# Can accept a 'foo' parameter - should already be in the validation_spec.
@@ -374,7 +435,7 @@ sub allowed_params
 	my $contained_class;
 	if ( exists $args->{"${name}_class"} ) {
 	  $contained_class = $args->{"${name}_class"};
-	  $p{"${name}_class"} = { type => SCALAR, parse => 'string' };  # Add to spec
+	  $p{"${name}_class"} = { type => SCALAR };  # Add to spec
 	} else {
 	  $contained_class = $c->{$name}{class};
 	}
@@ -394,7 +455,7 @@ sub allowed_params
 }
 
 sub _iterate_ISA {
-  my ($class, $look_in, $cache_in, $add_container) = @_;
+  my ($class, $look_in, $cache_in, $add) = @_;
 
   return $cache_in->{$class} if $cache_in->{$class};
 
@@ -403,24 +464,24 @@ sub _iterate_ISA {
   no strict 'refs';
   foreach my $superclass (@{ "${class}::ISA" }) {
     next unless $superclass->isa(__PACKAGE__);
-    my $superparams = $superclass->_iterate_ISA($look_in, $cache_in, $add_container);
+    my $superparams = $superclass->_iterate_ISA($look_in, $cache_in, $add);
     @out{keys %$superparams} = values %$superparams;
   }
   if (my $x = $look_in->{$class}) {
     @out{keys %$x} = values %$x;
   }
   
-  $out{container} = { type => HASHREF } if $add_container;  # Urgh
-
+  @out{keys %$add} = values %$add if $add;
+  
   return $cache_in->{$class} = \%out;
 }
 
 sub get_contained_object_spec {
-  return (ref($_[0]) || shift)->_iterate_ISA(\%CONTAINED_OBJECTS, \%CONTAINED_CACHE);
+  return (ref($_[0]) || $_[0])->_iterate_ISA(\%CONTAINED_OBJECTS, \%CONTAINED_CACHE);
 }
 
 sub validation_spec {
-  return (ref($_[0]) || shift)->_iterate_ISA(\%VALID_PARAMS, \%VALID_CACHE, 1);
+  return (ref($_[0]) || $_[0])->_iterate_ISA(\%VALID_PARAMS, \%VALID_CACHE, { container => {type => HASHREF} });
 }
 
 1;
@@ -433,31 +494,34 @@ Class::Container - Glues object frameworks together transparently
 
 =head1 SYNOPSIS
 
- package Candy;
- 
+ package Car;
  use Class::Container;
- use base qw(Class::Container);
+ @ISA = qw(Class::Container);
  
  __PACKAGE__->valid_params
    (
-    color  => {default => 'green'},
-    flavor => {default => 'hog'},
+    paint  => {default => 'burgundy'},
+    style  => {default => 'coupe'},
+    windshield => {isa => 'Glass'},
+    radio  => {isa => 'Audio::Device'},
    );
  
  __PACKAGE__->contained_objects
    (
-    frog       =>  'Food::TreeFrog',
-    vegetables => { class => 'Food::Ingredient',
+    windshield => 'Glass::Shatterproof',
+    wheel      => { class => 'Vehicle::Wheel',
                     delayed => 1 },
+    radio      => 'Audio::MP3',
    );
  
  sub new {
    my $package = shift;
    
-   # Build $self, possibly passing elements of @_ to
-   # 'frog' or 'vegetables' objects
+   # 'windshield' and 'radio' objects are created automatically by
+   # SUPER::new()
    my $self = $package->SUPER::new(@_);
-
+   
+   $self->{right_wheel} = $self->create_delayed_object('wheel');
    ... do any more initialization here ...
    return $self;
  }
@@ -469,7 +533,7 @@ inter-operate.  It was first designed and built for C<HTML::Mason>, in
 which the Compiler, Lexer, Interpreter, Resolver, Component, Buffer,
 and several other objects must create each other transparently,
 passing the appropriate parameters to the right class, possibly
-substituting their own subclass for any of these objects.
+substituting other subclasses for any of these objects.
 
 The main features of C<Class::Container> are:
 
@@ -477,8 +541,13 @@ The main features of C<Class::Container> are:
 
 =item *
 
-Declaration of parameters used by each member in a class
-framework
+Explicit declaration of containment relationships (aggregation,
+factory creation, etc.)
+
+=item *
+
+Declaration of constructor parameters accepted by each member in a
+class framework
 
 =item *
 
@@ -494,9 +563,10 @@ objects automatically and transparently
 
 =head2 Scenario
 
-Suppose you've got a class called C<Parent>, which creates object of
-the class C<Child>, which in turn creates objects of the class
-C<GrandChild>.  Each class accepts a set of named parameters in its
+Suppose you've got a class called C<Parent>, which contains an object of
+the class C<Child>, which in turn contains an object of the class
+C<GrandChild>.  Each class creates the object that it contains.
+Each class also accepts a set of named parameters in its
 C<new()> method.  Without using C<Class::Container>, C<Parent> will
 have to know all the parameters that C<Child> takes, and C<Child> will
 have to know all the parameters that C<GrandChild> takes.  And some of
@@ -532,8 +602,8 @@ The C<new()> method ensures that the proper parameters and objects are
 passed to the proper constructor methods.
 
 At the moment, the only possible constructor method is C<new()>.  If
-you need to create other constructor methods, they should also call
-C<SUPER::new()>, or possibly even your class's C<new()> method.
+you need to create other constructor methods, they should call
+C<new()> internally.
 
 =head2 __PACKAGE__->contained_objects()
 
@@ -644,11 +714,32 @@ delayed objects in the future.  The first argument specifies the
 "name" of the object, and any additional arguments are key-value pairs
 that will become parameters to the delayed object.
 
+When called with only a C<$name> argument and no list of parameters to
+set, returns a hash reference containing the parameters that will be
+passed when creating objects of this type.
+
 =head2 $self->delayed_object_class($name)
 
 Returns the class that will be used when creating delayed objects of
 the given name.  Use this sparingly - in most situations you shouldn't
 care what the class is.
+
+=head2 __PACKAGE__->decorates()
+
+Version 0.09 of Class::Container added [as yet experimental] support
+for so-called "decorator" relationships, using the term as defined in
+I<Design Patterns> by Gamma, et al. (the Gang of Four book).  To
+declare a class as a decorator of another class, simply set C<@ISA> to
+the class which will be decorated, and call the decorator class's
+C<decorates()> method.
+
+Internally, this will ensure that objects are instantiated as
+decorators.  This means that you can mix & match extra add-on
+functionality classes much more easily.
+
+In the current implementation, if only a single decoration is used on
+an object, it will be instantiated as a simple subclass, thus avoiding
+a layer of indirection.
 
 =head2 $self->validation_spec()
 
@@ -740,13 +831,16 @@ you can override this method in your class, something like so:
 
 =head1 SEE ALSO
 
-L<Params::Validate>, L<HTML::Mason>
+L<Params::Validate>
 
 =head1 AUTHOR
 
-Ken Williams <ken@mathforum.org>, based extremely heavily on
-collaborative work with Dave Rolsky <autarch@urth.org> and Jonathan
-Swartz <swartz@pobox.com> on the HTML::Mason project.
+Originally by Ken Williams <ken@mathforum.org> and Dave Rolsky
+<autarch@urth.org> for the HTML::Mason project.  Important feedback
+contributed by Jonathan Swartz <swartz@pobox.com>.  Extended by Ken
+Williams for the AI::Categorizer project.
+
+Currently maintained by Ken Williams.
 
 =head1 COPYRIGHT
 
