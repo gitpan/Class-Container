@@ -1,8 +1,19 @@
 package Class::Container;
-$VERSION = '0.01_05';
-$VERSION = eval $VERSION;
 
-BEGIN { eval "use Scalar::Util qw(weaken)" }  # Optional
+$VERSION = '0.02';
+$VERSION = eval $VERSION if $VERSION =~ /_/;
+
+my $HAVE_WEAKEN = 0;
+BEGIN {
+  eval {
+    require Scalar::Util;
+    Scalar::Util->import('weaken');
+    $HAVE_WEAKEN = 1;
+  };
+  warn "Scalar::Util not detected - container() method not available\n" if !$HAVE_WEAKEN and $^W;
+  
+  *weaken = sub {} unless defined &weaken;
+}
 
 use strict;
 
@@ -35,10 +46,15 @@ my %CONTAINED_OBJECTS = ();
 sub new
 {
     my $proto = shift;
-    my $class = ref $proto || $proto;
+    my $class = ref($proto) || $proto;
     my @args = $class->create_contained_objects(@_);
-    local $Params::Validate::called = "$class->new()";
-    return bless {validate @args, $class->validation_spec}, $class;
+    return bless {
+		  validate_with(
+				params => \@args,
+				spec => $class->validation_spec,
+				called => "$class->new()",
+			       )
+		 }, $class;
 }
 
 sub all_specs
@@ -126,6 +142,7 @@ sub contained_objects
 
 sub container {
   my $self = shift;
+  return undef unless $HAVE_WEAKEN;
   return $self->{container}{container};
 }
 
@@ -197,15 +214,27 @@ sub create_contained_objects
 sub create_delayed_object
 {
     my ($self, $name, %args) = @_;
-    $args{container}{container} = $self;
-    weaken($args{container}{container}) if $INC{'Scalar/Util.pm'};
+    if ($HAVE_WEAKEN) {
+	$args{container}{container} = $self;
+	weaken($args{container}{container});
+    }
     return $self->call_method($name, 'new', %args);
+}
+
+sub delayed_object_class
+{
+    my $self = shift;
+    my $name = shift;
+    die "Unknown delayed object '$name'"
+	unless exists $self->{container}{delayed}{$name};
+
+    $self->{container}{delayed}{$name}{class} = shift if @_;
+    return $self->{container}{delayed}{$name}{class};
 }
 
 sub delayed_object_params
 {
     my ($self, $name, %args) = @_;
-
     die "Unknown delayed object '$name'"
 	unless exists $self->{container}{delayed}{$name};
 
@@ -286,18 +315,18 @@ sub allowed_params
 
 	# Can accept a 'foo_class' parameter instead of a 'foo' parameter
 	# If neither parameter is present, give up - perhaps it's optional
-	my $low_class = "${name}_class";
+	my $class_name_param = "${name}_class";
 
-	if ( exists $args->{$low_class} )
+	if ( exists $args->{$class_name_param} )
 	{
 	    delete $p{$name};
-	    $p{$low_class} = { type => SCALAR, parse => 'string' };  # A loose spec
+	    $p{$class_name_param} = { type => SCALAR, parse => 'string' };  # A loose spec
 	}
 
 	# We have to get the allowed params for the contained object
 	# class.  That class could be overridden, in which case we use
 	# the new class provided.  Otherwise, we use our default.
-	my $spec = exists $args->{$low_class} ? $args->{$low_class} : $c{$name};
+	my $spec = exists $args->{$class_name_param} ? $args->{$class_name_param} : $c{$name};
 	my $contained_class = ref($spec) ? $spec->{class}   : $spec;
 
 	# we have to make sure it is loaded before we try calling
@@ -476,6 +505,11 @@ than once.  The constructors will still enjoy the automatic passing of
 parameters to the correct class.  See the C<create_delayed_object()>
 for more.
 
+To declare an object as "delayed", call this method like this:
+
+  __PACKAGE__->contained_objects( train => { class => 'Big::Train',
+                                             delayed => 1 } );
+
 =head2 __PACKAGE__->valid_params()
 
 The C<valid_params()> method is similar to the C<contained_objects()>
@@ -528,32 +562,43 @@ passed to the C<new()> method of the object being created, overriding
 any parameters previously passed to the container class constructor.
 (Could I possibly be more alliterative?  Veni, vedi, vici.)
 
-=head2 $self->delayed_object_params()
+=head2 $self->delayed_object_params($name, [params])
 
 Allows you to adjust the parameters that will be used to create any
 delayed objects in the future.  The first argument specifies the
 "name" of the object, and any additional arguments are key-value pairs
 that will become parameters to the delayed object.
 
+=head2 $self->delayed_object_class($name)
+
+Returns the class that will be used when creating delayed objects of
+the given name.  Use this sparingly - in most situations you shouldn't
+care what the class is.
+
 =head2 $self->validation_spec()
 
 Returns a hash reference suitable for passing to the
-C<Params::Validate> C<validate> function.  Does not include any
+C<Params::Validate> C<validate> function.  Does I<not> include any
 arguments that can be passed to contained objects.
 
 =head2 $self->allowed_params()
 
 Returns a hash reference of every parameter this class will accept,
-including parameters it will pass on to its own contained objects.
+I<including> parameters it will pass on to its own contained objects.
 
 =head2 $self->container()
 
 Returns the object that created you.  This is remembered by storing a
-reference to that object, so we will use the C<Scalar::Utils>
-C<weakref()> function to avoid persistent circular references that
-would cause memory leaks.  If you don't have C<Scalar::Utils>
-installed, you'll need to break these references yourself - future
-versions of this module will probably require C<Scalar::Utils>.
+reference to that object, so we use the C<Scalar::Utils> C<weakref()>
+function to avoid persistent circular references that would cause
+memory leaks.  
+
+If you don't have C<Scalar::Utils> installed, we don't make these
+references in the first place, and calling C<container()> will always
+return undef.
+
+In most cases you shouldn't care what object created you, so use this
+method sparingly.
 
 =head1 SEE ALSO
 

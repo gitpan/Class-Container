@@ -92,6 +92,11 @@ METHODS
     constructors will still enjoy the automatic passing of parameters to the
     correct class. See the "create_delayed_object()" for more.
 
+    To declare an object as "delayed", call this method like this:
+
+      __PACKAGE__->contained_objects( train => { class => 'Big::Train',
+                                                 delayed => 1 } );
+
   __PACKAGE__->valid_params()
 
     The "valid_params()" method is similar to the "contained_objects()" method
@@ -142,32 +147,41 @@ METHODS
     container class constructor. (Could I possibly be more alliterative? Veni,
     vedi, vici.)
 
-  $self->delayed_object_params()
+  $self->delayed_object_params($name, [params])
 
     Allows you to adjust the parameters that will be used to create any delayed
     objects in the future. The first argument specifies the "name" of the
     object, and any additional arguments are key-value pairs that will become
     parameters to the delayed object.
 
+  $self->delayed_object_class($name)
+
+    Returns the class that will be used when creating delayed objects of the
+    given name. Use this sparingly - in most situations you shouldn't care what
+    the class is.
+
   $self->validation_spec()
 
     Returns a hash reference suitable for passing to the "Params::Validate"
-    "validate" function. Does not include any arguments that can be passed to
+    "validate" function. Does *not* include any arguments that can be passed to
     contained objects.
 
   $self->allowed_params()
 
     Returns a hash reference of every parameter this class will accept,
-    including parameters it will pass on to its own contained objects.
+    *including* parameters it will pass on to its own contained objects.
 
   $self->container()
 
     Returns the object that created you. This is remembered by storing a
-    reference to that object, so we will use the "Scalar::Utils" "weakref()"
-    function to avoid persistent circular references that would cause memory
-    leaks. If you don't have "Scalar::Utils" installed, you'll need to break
-    these references yourself - future versions of this module will probably
-    require "Scalar::Utils".
+    reference to that object, so we use the "Scalar::Utils" "weakref()" function
+    to avoid persistent circular references that would cause memory leaks.
+
+    If you don't have "Scalar::Utils" installed, we don't make these references
+    in the first place, and calling "container()" will always return undef.
+
+    In most cases you shouldn't care what object created you, so use this method
+    sparingly.
 
 SEE ALSO
     the Params::Validate manpage, the HTML::Mason manpage

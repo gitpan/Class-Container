@@ -1,6 +1,12 @@
 
 use ExtUtils::MakeMaker;
 
+unless (eval "use Scalar::Util; 1") {
+  warn("You seem not to have the Scalar::Util module installed.\n" .
+       "Its installation is recommended (but not required) for Class::Container - see the README.\n");
+  sleep 4;
+}
+
 my $module = 'Class::Container';
 my ($name, $dir);
 ($name = $module) =~ s/.*::(\w+)/$1.pm/;
@@ -18,7 +24,7 @@ WriteMakefile
                       ),
              },
    'PREREQ_PM' => {
-		   Params::Validate => '0.14',
+		   Params::Validate => '0.18',
 		  },
    ($] >= 5.005 ?    ## Add these new keywords supported since 5.005
     (ABSTRACT_FROM => $name, # retrieve abstract from module
