@@ -254,6 +254,32 @@ METHODS
     delayed requests). The compiler contains a lexer, and each request contains
     a delayed buffer (or several delayed buffers).
 
+  $object->dump_parameters
+
+    Returns a hash reference containing a set of parameters that should be
+    sufficient to re-create the given object using its class's "new()" method.
+    This is done by fetching the current value for each declared parameter (i.e.
+    looking in "$object" for hash entries of the same name), then recursing
+    through all contained objects and doing the same.
+
+    A few words of caution here. First, the dumped parameters represent the
+    *current* state of the object, not the state when it was originally created.
+
+    Second, a class's declared parameters may not correspond exactly to its data
+    members, so it might not be possible to recover the former from the latter.
+    If it's possible but requires some manual fudging, you can override this
+    method in your class, something like so:
+
+     sub dump_parameters {
+       my $self = shift;
+       my $dump = $self->SUPER::dump_parameters();
+   
+       # Perform fudgery
+       $dump->{incoming} = $self->{_private};
+       delete $dump->{superfluous};
+       return $dump;
+     }
+
 SEE ALSO
     the Params::Validate manpage, the HTML::Mason manpage
 
