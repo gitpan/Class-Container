@@ -1,6 +1,6 @@
 package Class::Container;
 
-$VERSION = '0.04';
+$VERSION = '0.05';
 $VERSION = eval $VERSION if $VERSION =~ /_/;
 
 my $HAVE_WEAKEN = 0;
@@ -124,12 +124,6 @@ sub all_specs
     return %out;
 }
 
-sub _showme {
-  my ($thing, $name, %args) = @_;
-  return $thing->show_containers($name, %args) if $thing->isa(__PACKAGE__);
-  return "$args{indent}$name -> $thing" . ($args{delayed} ? " (delayed)\n" : "\n");
-}
-
 sub show_containers {
   my $self = shift;
   my $name = shift;
@@ -140,22 +134,16 @@ sub show_containers {
   my $out = "$args{indent}$name$self";
   $out .= " (delayed)" if $args{delayed};
   $out .= "\n";
+  return $out unless $self->isa(__PACKAGE__);
 
-  if (ref $self) {
-    # It's an object
-    while (my ($name, $spec) = each %{ $self->{container}{contained} } ) {
-      $out .= _showme($spec->{class}, $name, indent => "$args{indent}  ");
-    }
-    while (my ($name, $spec) = each %{ $self->{container}{delayed}   } ) {
-      $out .= _showme($spec->{class}, $name, indent => "$args{indent}  ", delayed => 1);
-    }
-    
-  } else {
-    # It's a class
-    my %spec = $self->get_contained_object_spec;
-    while (my ($name, $spec) = each %spec) {
-      $out .= _showme($spec->{class}, $name, indent => "$args{indent}  ", delayed => $spec->{delayed});
-    }
+  my $specs = ref($self) ? $self->{container}{contained} : $self->get_contained_object_spec;
+
+  while (my ($name, $spec) = each %$specs) {
+    my $class = $args{args}{"${name}_class"} || $spec->{class};
+    $out .= $class->show_containers($name,
+				    indent => "$args{indent}  ",
+				    args => $spec->{args},
+				    delayed => $spec->{delayed});
   }
 
   return $out;
@@ -189,7 +177,7 @@ sub call_method {
     or die "Unknown contained item '$name'";
 
   $self->_load_module($class);
-  return $class->$method( %{ $self->{container}{delayed}{$name}{args} }, @args );
+  return $class->$method( %{ $self->{container}{contained}{$name}{args} }, @args );
 }
 
 # Accepts a list of key-value pairs as parameters, representing all
@@ -203,40 +191,30 @@ sub create_contained_objects
     # This one is special, don't pass to descendants
     my $container_stuff = delete($args{container}) || {};
 
-    my %c = $class->get_contained_object_spec;
+    my %c = %{ $class->get_contained_object_spec };
     my %contained_args;
+    my %to_create;
 
     while (my ($name, $spec) = each %c) {
-	if (exists $args{$name}) {
-	    # User provided an object
-	    die "Cannot provide a '$name' object, its creation is delayed" if $spec->{delayed};
+      # Figure out exactly which class to make an object of
+      my ($contained_class, $c_args) = $class->_get_contained_args($name, \%args);
+      @contained_args{ keys %$c_args } = ();  # Populate with keys
+      $to_create{$name}{class} = $contained_class;
+      $to_create{$name}{args} = $c_args;
+    }
+    
+    while (my ($name, $spec) = each %c) {
+      # This delete() needs to be outside the previous loop, because
+      # multiple contained objects might need to see it
+      delete $args{"${name}_class"};
 
-	    # We still need to delete any arguments that _would_ have
-	    # been given to this object's constructor (if the object
-	    # had not been given).  This allows a container class to
-	    # provide defaults for a contained object while still
-	    # accepting an already-constructed object as one of its
-	    # params.
-	    #
-	    my $c_args = $class->_get_contained_args(ref $args{$name}, \%args);
-	    @contained_args{ keys %$c_args } = ();
-	    next;
-	}
-
-	# Figure out exactly which class to make an object of
-	my $contained_class = delete $args{"${name}_class"} || $spec->{class};
-	next unless $contained_class;
-
-	my $c_args = $class->_get_contained_args($contained_class, \%args);
-	@contained_args{ keys %$c_args } = ();  # Populate with keys
-
-	if ($spec->{delayed}) {
-	  $container_stuff->{delayed}{$name}{args} = $c_args;
-	  $container_stuff->{delayed}{$name}{class} = $contained_class;
-	} else {
-	  $args{$name} = $contained_class->new(%$c_args);
-	  $container_stuff->{contained}{$name}{class} = $contained_class;
-	}
+      if ($spec->{delayed}) {
+	$container_stuff->{contained}{$name} = $to_create{$name};
+	$container_stuff->{contained}{$name}{delayed} = 1;
+      } else {
+	$args{$name} = $to_create{$name}{class}->new(%{$to_create{$name}{args}});
+	$container_stuff->{contained}{$name}{class} = $to_create{$name}{class};
+      }
     }
 
     # Delete things that we're not going to use - things that are in
@@ -251,6 +229,8 @@ sub create_contained_objects
 sub create_delayed_object
 {
   my ($self, $name) = (shift, shift);
+  die "Unknown delayed item '$name'" unless $self->{container}{contained}{$name}{delayed};
+
   if ($HAVE_WEAKEN) {
     push @_, container => {container => $self};
     weaken $_[-1]->{container};
@@ -263,16 +243,16 @@ sub delayed_object_class
     my $self = shift;
     my $name = shift;
     die "Unknown delayed item '$name'"
-	unless exists $self->{container}{delayed}{$name};
+	unless $self->{container}{contained}{$name}{delayed};
 
-    return $self->{container}{delayed}{$name}{class};
+    return $self->{container}{contained}{$name}{class};
 }
 
 sub contained_class
 {
     my ($self, $name) = @_;
     die "Unknown contained item '$name'"
-	unless my $spec = $self->{container}{contained}{$name} || $self->{container}{delayed}{$name};
+	unless my $spec = $self->{container}{contained}{$name};
     return $spec->{class};
 }
 
@@ -280,36 +260,39 @@ sub delayed_object_params
 {
     my ($self, $name, %args) = @_;
     die "Unknown delayed object '$name'"
-	unless exists $self->{container}{delayed}{$name};
+	unless $self->{container}{contained}{$name}{delayed};
 
     if (keys %args)
     {
-	@{ $self->{container}{delayed}{$name}{args} }{ keys(%args) } = values(%args);
+	@{ $self->{container}{contained}{$name}{args} }{ keys %args } = values %args;
     }
 
-    return %{ $self->{container}{delayed}{$name}{args} };
+    return %{ $self->{container}{contained}{$name}{args} };
 }
 
+# Everything the specified contained object will accept, including
+# parameters it will pass on to its own contained objects.
 sub _get_contained_args
 {
-    my ($class, $contained_class, $args) = @_;
+    my ($class, $name, $args) = @_;
+    
+    my $spec = $class->get_contained_object_spec->{$name}
+      or die "Unknown contained object '$name'";
 
+    my $contained_class = $args->{"${name}_class"} || $spec->{class};
     die "Invalid class name '$contained_class'"
 	unless $contained_class =~ /^[\w:]+$/;
 
     $class->_load_module($contained_class);
+    return ($contained_class, {}) unless $contained_class->isa(__PACKAGE__);
 
-    return {} unless $contained_class->isa(__PACKAGE__);
-
-    # Everything this class will accept, including parameters it will
-    # pass on to its own contained objects
     my $allowed = $contained_class->allowed_params($args);
 
     my %contained_args;
     foreach (keys %$allowed) {
 	$contained_args{$_} = $args->{$_} if exists $args->{$_};
     }
-    return \%contained_args;
+    return ($contained_class, \%contained_args);
 }
 
 sub _load_module {
@@ -334,14 +317,14 @@ sub get_contained_object_spec
     no strict 'refs';
     foreach my $superclass (@{ "${class}::ISA" }) {
 	next unless $superclass->isa(__PACKAGE__);
-	my %superparams = $superclass->get_contained_object_spec;
-	foreach my $key (keys %superparams) {
+	my $superparams = $superclass->get_contained_object_spec;
+	foreach my $key (keys %$superparams) {
 	  # Let subclass take precedence
-	  $c{$key} = $superparams{$key} unless exists $c{$key};
+	  $c{$key} = $superparams->{$key} unless exists $c{$key};
 	}
     }
 
-    return %c;
+    return \%c;
 }
 
 sub allowed_params
@@ -349,9 +332,17 @@ sub allowed_params
     my $class = shift;
     my $args = ref($_[0]) ? shift : {@_};
 
+    # Strategy: the allowed_params of this class consists of the
+    # validation_spec of this class, merged with the allowed_params of
+    # all contained classes.  The specific contained classes may be
+    # affected by arguments passed in, like 'interp' or
+    # 'interp_class'.  A parameter like 'interp' doesn't add anything
+    # to our allowed_params (because it's already created) but
+    # 'interp_class' does.
+
     my %p = %{ $class->validation_spec };
 
-    my %c = $class->get_contained_object_spec;
+    my %c = %{ $class->get_contained_object_spec };
 
     foreach my $name (keys %c)
     {
@@ -359,59 +350,24 @@ sub allowed_params
 	# Also, its creation parameters should already have been extracted from $args,
 	# so don't extract any parameters.
 	next if exists $args->{$name};
-
-	# Can accept a 'foo_class' parameter instead of a 'foo' parameter
-	# If neither parameter is present, give up - perhaps it's optional
-	my $class_name_param = "${name}_class";
-
-	if ( exists $args->{$class_name_param} )
-	{
-	    delete $p{$name};
-	    $p{$class_name_param} = { type => SCALAR, parse => 'string' };  # A loose spec
+	
+	# Figure out what class to use for this contained item
+	my $contained_class;
+	if ( exists $args->{"${name}_class"} ) {
+	  $contained_class = $args->{"${name}_class"};
+	  $p{"${name}_class"} = { type => SCALAR, parse => 'string' };  # Add to spec
+	} else {
+	  $contained_class = $c{$name}{class};
 	}
-
-	# We have to get the allowed params for the contained object
-	# class.  That class could be overridden, in which case we use
-	# the new class provided.  Otherwise, we use our default.
-	my $spec = exists $args->{$class_name_param} ? $args->{$class_name_param} : $c{$name};
-	my $contained_class = ref($spec) ? $spec->{class} : $spec;
-
-	# we have to make sure it is loaded before we try calling
-	# ->allowed_params
+	
+	# We have to make sure it is loaded before we try calling allowed_params()
 	$class->_load_module($contained_class);
 	next unless $contained_class->can('allowed_params');
-
+	
 	my $subparams = $contained_class->allowed_params($args);
-
-	#
-	# What we're doing here is checking for parameters in
-	# contained objects that expect an object of which the current
-	# class (for which we are retrieving allowed params) is a
-	# subclass (or the same class).
-	#
-	# For example, the HTML::Mason::Request class accepts an
-	# 'interp' param that must be of the HTML::Mason::Interp
-	# class.
-	#
-	# But the HTML::Mason::Interp class contains a request object.
-	# While it makes sense to say that the interp class can accept
-	# a parameter like 'autoflush' on behalf of the request, it
-	# makes very little sense to say that the interp can accept an
-	# interp as a param.
-	#
-	# This _does_ cause a potential problem if we ever want to
-	# have a class that 'contains' other objects of the same
-	# class.
-	#
-	foreach (keys %$subparams)
-	{
-	    if ( ref $subparams->{$_} &&
-		 exists $subparams->{$_}{isa} &&
-		 $class->isa( $subparams->{$_}{isa} ) )
-	    {
-		next;
-	    }
-	    $p{$_} = $subparams->{$_};
+	
+	foreach (keys %$subparams) {
+	  $p{$_} ||= $subparams->{$_};
 	}
     }
 
@@ -467,7 +423,8 @@ Class::Container - Glues object frameworks together transparently
  sub new {
    my $package = shift;
    
-   # Build $self, possibly passing elements of @_ to 'ingredient' object
+   # Build $self, possibly passing elements of @_ to
+   # 'frog' or 'vegetables' objects
    my $self = $package->SUPER::new(@_);
 
    ... do any more initialization here ...
@@ -478,9 +435,10 @@ Class::Container - Glues object frameworks together transparently
 
 This class facilitates building frameworks of several classes that
 inter-operate.  It was first designed and built for C<HTML::Mason>, in
-which the Compiler, Lexer, Interpreter, Resolver, Component, Buffer, and several
-other objects must create each other transparently, passing the
-appropriate parameters to the right class.
+which the Compiler, Lexer, Interpreter, Resolver, Component, Buffer,
+and several other objects must create each other transparently,
+passing the appropriate parameters to the right class, possibly
+substituting their own subclass for any of these objects.
 
 The main features of C<Class::Container> are:
 
@@ -497,10 +455,39 @@ objects automatically and transparently
 
 =back
 
-The most important methods provided are C<valid_params()> and
-C<contained_objects()>, both of which are class methods.
+=head2 Scenario
+
+Suppose you've got a class called C<Parent>, which creates object of
+the class C<Child>, which in turn creates objects of the class
+C<GrandChild>.  Each class accepts a set of named parameters in its
+C<new()> method.  Without using C<Class::Container>, C<Parent> will
+have to know all the parameters that C<Child> takes, and C<Child> will
+have to know all the parameters that C<GrandChild> takes.  And some of
+the parameters accepted by C<Parent> will really control aspects of
+C<Child> or C<GrandChild>.  Likewise, some of the parameters accepted
+by C<Child> will really control aspects of C<GrandChild>.  So, what
+happens when you decide you want to use a C<GrandDaughter> class
+instead of the generic C<GrandChild>?  C<Parent> and C<Child> must be
+modified accordingly, so that any additional parameters taken by
+C<GrandDaughter> can be accommodated.  This is a pain - the kind of
+pain that object-oriented programming was supposed to shield us from.
+
+Now, how can C<Class::Container> help?  Using C<Class::Container>,
+each class (C<Parent>, C<Child>, and C<GrandChild>) will declare what
+arguments they take, and declare their relationships to the other
+classes (C<Parent> creates/contains a C<Child>, and C<Child>
+creates/contains a C<GrandChild>).  Then, when you create a C<Parent>
+object, you can pass C<< Parent->new() >> all the parameters for all
+three classes, and they will trickle down to the right places.
+Furthermore, C<Parent> and C<Child> won't have to know anything about
+the parameters of its contained objects.  And finally, if you replace
+C<GrandChild> with C<GrandDaughter>, no changes to C<Parent> or
+C<Child> will likely be necessary.
 
 =head1 METHODS
+
+The most important methods provided are C<valid_params()> and
+C<contained_objects()>, both of which are class methods.
 
 =head2 new()
 

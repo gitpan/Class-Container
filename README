@@ -23,7 +23,8 @@ SYNOPSIS
      sub new {
        my $package = shift;
    
-       # Build $self, possibly passing elements of @_ to 'ingredient' object
+       # Build $self, possibly passing elements of @_ to
+       # 'frog' or 'vegetables' objects
        my $self = $package->SUPER::new(@_);
 
        ... do any more initialization here ...
@@ -35,7 +36,8 @@ DESCRIPTION
     inter-operate. It was first designed and built for "HTML::Mason", in which
     the Compiler, Lexer, Interpreter, Resolver, Component, Buffer, and several
     other objects must create each other transparently, passing the appropriate
-    parameters to the right class.
+    parameters to the right class, possibly substituting their own subclass for
+    any of these objects.
 
     The main features of "Class::Container" are:
 
@@ -43,10 +45,37 @@ DESCRIPTION
     * Transparent passing of constructor parameters to the class that needs them
     * Ability to create one (automatic) or many (manual) contained objects
     automatically and transparently
+  Scenario
+
+    Suppose you've got a class called "Parent", which creates object of the
+    class "Child", which in turn creates objects of the class "GrandChild". Each
+    class accepts a set of named parameters in its "new()" method. Without using
+    "Class::Container", "Parent" will have to know all the parameters that
+    "Child" takes, and "Child" will have to know all the parameters that
+    "GrandChild" takes. And some of the parameters accepted by "Parent" will
+    really control aspects of "Child" or "GrandChild". Likewise, some of the
+    parameters accepted by "Child" will really control aspects of "GrandChild".
+    So, what happens when you decide you want to use a "GrandDaughter" class
+    instead of the generic "GrandChild"? "Parent" and "Child" must be modified
+    accordingly, so that any additional parameters taken by "GrandDaughter" can
+    be accommodated. This is a pain - the kind of pain that object-oriented
+    programming was supposed to shield us from.
+
+    Now, how can "Class::Container" help? Using "Class::Container", each class
+    ("Parent", "Child", and "GrandChild") will declare what arguments they take,
+    and declare their relationships to the other classes ("Parent"
+    creates/contains a "Child", and "Child" creates/contains a "GrandChild").
+    Then, when you create a "Parent" object, you can pass "Parent->new()" all
+    the parameters for all three classes, and they will trickle down to the
+    right places. Furthermore, "Parent" and "Child" won't have to know anything
+    about the parameters of its contained objects. And finally, if you replace
+    "GrandChild" with "GrandDaughter", no changes to "Parent" or "Child" will
+    likely be necessary.
+
+METHODS
     The most important methods provided are "valid_params()" and
     "contained_objects()", both of which are class methods.
 
-METHODS
   new()
 
     Any class that inherits from "Class::Container" should also inherit its
